@@ -1,4 +1,4 @@
-# Infinite_Buffer
+# Designing and implementing Infinite Buffer using Dynamic Memory Allocation with comparative performance analysis with respect to Finite Buffer
 
 
 ## Problem Statement
