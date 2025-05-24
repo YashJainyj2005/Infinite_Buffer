@@ -166,8 +166,6 @@ Mutexes used for logging operations (prod_stat_mutex, cons_stat_mutex): Used to 
 #  Project Setup and Execution Guide  
 **For Infinite & Finite Buffer Implementations**
 
-##  Introduction
-
 This guide explains how to compile and run the `InfiniteBuffer.cpp` and `FiniteBuffer.cpp` programs, which demonstrate synchronized producer-consumer behavior with graphical visualization using **SFML**.
 
 ---
