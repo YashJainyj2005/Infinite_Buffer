@@ -1,0 +1,26 @@
+CXX = g++
+CXXFLAGS = -std=c++17 -Wall -O2 -pthread
+SFML_FLAGS = -lsfml-graphics -lsfml-window -lsfml-system
+
+INFINITE_TARGET = infinite_buffer
+FINITE_TARGET = finite_buffer
+
+INFINITE_SRC = InfiniteBuffer.cpp
+FINITE_SRC = FiniteBuffer.cpp
+
+all: $(INFINITE_TARGET) $(FINITE_TARGET)
+
+$(INFINITE_TARGET): $(INFINITE_SRC)
+	$(CXX) $(CXXFLAGS) -o $@ $^ $(SFML_FLAGS)
+
+$(FINITE_TARGET): $(FINITE_SRC)
+	$(CXX) $(CXXFLAGS) -o $@ $^ $(SFML_FLAGS)
+
+run-infinite: $(INFINITE_TARGET)
+	./$(INFINITE_TARGET)
+
+run-finite: $(FINITE_TARGET)
+	./$(FINITE_TARGET)
+
+clean:
+	rm -f $(INFINITE_TARGET) $(FINITE_TARGET) *.o *.txt
