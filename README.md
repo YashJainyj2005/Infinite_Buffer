@@ -109,7 +109,7 @@ Mutexes used for logging operations (prod_stat_mutex, cons_stat_mutex): Used to 
 #### Consumer Workflow
 ![Consumer Workflow](./Pictures/finite_consumer.png)
 
-## 📈 Logging & Monitoring
+##  Logging & Monitoring
 
 ### Files:
 - `InfiniteBufferLogger.txt`
@@ -297,7 +297,7 @@ finite_buffer.exe
 
 ---
 
-## 📝 Output Files
+##  Output Files
 
 | File Name                | Purpose                              |
 |--------------------------|--------------------------------------|
