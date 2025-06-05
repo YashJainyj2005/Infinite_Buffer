@@ -10,14 +10,11 @@
 #include <sstream>
 #include <SFML/Graphics.hpp>
 #include <SFML/System.hpp>
-#include <fstream>
-#include <sstream>
 #include <atomic>
 #include <bits/stdc++.h>
 using namespace std;
 
-// -------------------- Node Definition --------------------
-// Each node holds one item and a flag to indicate if it's filled.
+// Each node contains the data to be stored in it, a flag indicating whehter full or empty and a pointer to the next node.
 struct Node {
     int data;
     bool filled;
@@ -25,7 +22,10 @@ struct Node {
     Node() : data(0), filled(false), next(nullptr) {}
 };
 
-// -------------------- Ticket Lock for Producer Fairness --------------------
+// Custom made ticket lock
+
+// This lock helps in introducing fairness in the synchronization process as 
+// each producer/consumer is given a ticket value and is served in FIFO order
 class TicketLock {
     private:
         atomic<int> next_ticket{0};
@@ -49,138 +49,116 @@ class TicketLock {
 // -------------------- Linked List Buffer --------------------
 class LinkedListBuffer {
 private:
-    Node* head; // Producer writes here
-    Node* tail; // Consumer reads from here
+    Node* head; // Producer writes at the head end
+    Node* tail; // Consumer reads at the tail end
     const int BUFFER_SIZE = 10; // Fixed buffer size
 
     TicketLock ticket_lock_producer;
-    mutex mutex_producer;       // Mutex for synchronizing producers access to the buffer
-    mutex mutex_consumer;       // Mutex for synchronizing consumers access to the buffer
-    condition_variable cv_not_empty;        // Condition variable used by consumers to wait until an item is available
-    condition_variable cv_not_full;         // Condition variable used by producers to wait until buffer has space
+    mutex mutex_producer;       
+    mutex mutex_consumer;      
+    condition_variable cv_not_empty;       
+    condition_variable cv_not_full;      
 
-    // Mutex to protect access to performance statistics
     mutex prod_stat_mutex;   
     mutex cons_stat_mutex;
 
-    chrono::duration<double> total_produce_time{};      // Cumulative time spent by all producers (from attempting to acquire lock to releasing it)
-    chrono::duration<double> total_consume_time{};      // Cumulative time spent by all consumers (from attempting to acquire lock to releasing it)
+    chrono::duration<double> total_produce_time{};     
+    chrono::duration<double> total_consume_time{};   
 
-    chrono::steady_clock::time_point start_time;        // Timestamp marking the start of buffer activity
+    chrono::steady_clock::time_point start_time;     
 
 public:
-    // Constructor: Initializes a fixed-size circular buffer.
-    // A series of BUFFER_SIZE nodes are dynamically allocated and linked in a circular fashion.
-    // The 'head' and 'tail' pointers are initialized to the same node.
-    // The global start time of the buffer operation is also recorded here
+// Implementing circular linked list to implement finite fixed buffer
     LinkedListBuffer() {
-        Node* first = new Node();   // Start of the circular buffer
+        Node* first = new Node();   
         Node* current = first;
         
         for(int i = 1; i < BUFFER_SIZE; ++i) {
             current->next = new Node();
-            current = current->next;    // Adding a new node to the list
+            current = current->next;   
         }
-        current->next = first;      // Completing the circle
+        current->next = first;     
         
-        head = first;   // Consumer reads from head
-        tail = first;   // Producer writes to tail
-        start_time = chrono::steady_clock::now();  // Mark the start of simulation
+        head = first;   
+        tail = first; =
+        start_time = chrono::steady_clock::now();  
     }
 
-    // Produces an item into the buffer by filling the current head node.
-    // Waits if the head node is already filled (i.e., buffer is full at that position).
-    // Logs the time taken to acquire the lock, to wait for buffer to be empty at some position and produce the item
     void produce(int item, int producer_id) {
-        auto request_lock_time = chrono::steady_clock::now();     // Time before acquiring lock
+        auto request_lock_time = chrono::steady_clock::now();  
         
-        // Ensuring fairness
+        // Acquiring ticket lock to ensure fair synchronization
         ticket_lock_producer.lock();
-        // Acquiring the producer lock to ensure mutual exclusion while modifying the buffer
+        
         unique_lock<mutex> lock(mutex_producer);                  
 
         // Wait until the node at head is free to be filled
         cv_not_full.wait(lock, [this] { return !head->filled; });
 
-        auto acquired_lock_time = chrono::steady_clock::now();    // Time after acquiring lock
+        auto acquired_lock_time = chrono::steady_clock::now();  
         
-        // Calculating how long the thread waited for the lock and buffer to have space
+
         auto wait_duration = acquired_lock_time - request_lock_time;
 
-        // Fill the buffer node with item
+
         head->data = item;
         Node* temp = head->next;
         head->filled = true;
-        head = temp; // Move to next node in circle
+        head = temp; 
 
-        // Generating a timestamp relative to the start of buffer operation
+ 
         auto now = chrono::steady_clock::now();
         long long timestamp = chrono::duration_cast<chrono::microseconds>(now - start_time).count();
 
-        // Converting the wait time into milliseconds for logging
         double waited_ms = chrono::duration_cast<chrono::duration<double, milli>>(wait_duration).count();
 
-        // Logging the producer event
-        logEvent("[" + to_string(timestamp) + "us] Producer " + to_string(producer_id) + " produced: " + to_string(item) + " | Waited: " + to_string(waited_ms) + "ms");
+        // Logging
+        logEvent("[" + to_string(timestamp) + "us] Producer "+ to_string(producer_id)+" waited for "+to_string(waited_ms)+"ms and produced: "+to_string(item));
 
-
-        // Releasing the producer lock so that other producers can enter the critical section.
+        // Releasing the producer lock 
         lock.unlock();
-        // Notifying one of the waiting consumer threads that a new item is available in the buffer
+        // Notifying one of the waiting consumer threads
         cv_not_empty.notify_one();
 
         ticket_lock_producer.unlock();
 
-        // Marking the time when production ends (after releasing the lock and notifying)
         auto end = chrono::steady_clock::now();
 
-        // Updating cumulative production time (including wait + actual work),
-        // ensuring thread-safe access to statistics using stat mutex.
         lock_guard<mutex> stats_lock(prod_stat_mutex);
         total_produce_time += ((end - request_lock_time));
     }
 
-    // Consumes an item from the buffer by reading the current tail node.
-    // Waits if the tail node is empty (i.e., no item to consume).
-    // Logs the time taken to acquire the lock and consume the item.
     int consume(int consumer_id) {
-        // consumer starts trying to acquire the lock
         auto request_lock_time = chrono::steady_clock::now();
 
-        // Acquiring the consumer lock to ensure mutual exclusion while reading from the buffer.
+        // First consumer acquires lock to ensure synchronization
         unique_lock<mutex> lock(mutex_consumer);
 
-        // Blocking the consumer thread until an item is available (tail->filled == true).
-        // This avoids busy waiting and efficiently synchronizes with the producer.
         cv_not_empty.wait(lock, [this] { return tail->filled; });
         auto acquired_lock_time = chrono::steady_clock::now();
-
-        // Measuring how long the thread waited (for the lock and data availability).
+.
         auto wait_duration = acquired_lock_time - request_lock_time;
 
-        // Retrieve the item from the buffer and mark the node as empty
+        // Consuming the current data
         int item = tail->data;
         tail->filled = false;
-
-        // Recording the timestamp of the consume event, relative to the global start time
+        
         auto now = chrono::steady_clock::now();
         long long timestamp = chrono::duration_cast<chrono::microseconds>(now - start_time).count();
 
-        // Converting the wait time to milliseconds for better logs
         double waited_ms = chrono::duration_cast<chrono::duration<double, milli>>(wait_duration).count();
 
-        // Logging the consumer event
-        logEvent("[" + to_string(timestamp) + "us] Consumer " + to_string(consumer_id) + " consumed: " + to_string(item) + " | Waited: " + to_string(waited_ms) + "ms");
+        // Logging
+        logEvent("[" + to_string(timestamp) + "us] Consumer " + to_string(consumer_id)+" waited for "+to_string(waited_ms)+"ms and consumed: "+to_string(item));
 
         Node* temp = tail;
-        tail = tail->next; // Move to next node in circle
+        tail = tail->next; 
 
         // Unlocking the buffer so other consumers can proceed
         lock.unlock();
         // Notifying producers that space is available
         cv_not_full.notify_one();
 
-        // Update cumulative consumption time using a thread-safe mutex
         auto end = chrono::steady_clock::now();
         lock_guard<mutex> stats_lock(cons_stat_mutex);
         total_consume_time += (end - request_lock_time);
@@ -188,9 +166,6 @@ public:
         return item;
     }
 
-    // Returns a vector containing time-related statistics:
-    // [0] = total time spent in produce() by all producers (in seconds)
-    // [1] = total time spent in consume() by all consumers (in seconds)
     vector<double> Stats() {
         vector<double> time_stat;
         time_stat.push_back(total_produce_time.count());
@@ -209,24 +184,20 @@ private:
     }
 };
 
-// Struct to hold parsed information from each log entry.
-// This structure is used during post-simulation analysis
 struct LogEvent {
-    long long timestamp;        // Time of the event in microseconds since buffer start
-    string type; // "Producer" or "Consumer"  — identifies the source of the event
-    int id;     // ID of the producer or consumer thread responsible for the event
-    int value;  // The item produced or consumed
+    long long timestamp;        
+    string type; // Producer or Consumer entry
+    int id;     // ID of the producer or consumer thread
+    int value; 
 };
 
-// Visualizer class handles parsing log events and managing view state for graphical display of the buffer operations timeline
+// Visualizer
 class Visualizer {
-    sf::View view;      // SFML view for scrollable/zoomable rendering
-    float scrollOffset = 0.0f;  // Used to adjust vertical scroll in the visual display
+    sf::View view;      
+    float scrollOffset = 0.0f;  
 private:
-    vector<LogEvent> events;    // Stores structured log entries parsed from FiniteBufferLogger.txt
+    vector<LogEvent> events;  
 
-    // Parses FiniteBufferLogger.txt and populates the 'events' vector with LogEvent entries.
-    // Each line is processed to extract timestamp, event type, thread ID, and item value
     void parseLogs() {
         ifstream in("FiniteBufferLogger.txt");
         string line;
@@ -234,39 +205,31 @@ private:
         while (getline(in, line)) {
             LogEvent e;
 
-            // Extracting timestamp enclosed in [ ] and ending with "us]
             size_t ts_start = line.find('[');
             size_t ts_end = line.find("us]");
 
             if (ts_start == string::npos || ts_end == string::npos) continue;
 
             string ts_str = line.substr(ts_start + 1, ts_end - ts_start - 1);
-            e.timestamp = stoll(ts_str);    // Converting string to long long
-
-            // Identifying whether the line represents a Producer or Consumer event
+            e.timestamp = stoll(ts_str);    
             if (line.find("Producer") != string::npos) {
                 e.type = "Producer";
-                // Extracting producer ID and item value
                 sscanf(line.c_str(), "[%*lldus] Producer %d produced: %d", &e.id, &e.value);
             } else if (line.find("Consumer") != string::npos) {
                 e.type = "Consumer";
-                // Extracting Consumer ID and item value
                 sscanf(line.c_str(), "[%*lldus] Consumer %d consumed: %d", &e.id, &e.value);
             }
-
-            // Adding the parsed event to the list for later rendering
             events.push_back(e);
         }
     }
 
 public:
 void run() {
-    // Exttacting events
     parseLogs();
 
     // Constants for visualizing nodes
     const int NODE_RADIUS = 25;
-    const int NODE_SPACING = 50;    // Spacing between nodes horizontally
+    const int NODE_SPACING = 50;
     const int WINDOW_WIDTH = 1400;
     const int WINDOW_HEIGHT = 600;
 
@@ -287,45 +250,41 @@ void run() {
     fpsText.setFillColor(sf::Color::White);
     fpsText.setPosition(10, 10);
 
-    // Time-based animation setup
-    if (events.empty()) return;  // If there are no events, stop execution
-    long long startTime = events[0].timestamp;  // Timestamp of the first event
-    const float TIME_SCALE = 0.0003f;  // Scaling factor for animation speed (microseconds --> seconds)
+    if (events.empty()) return;  
+    long long startTime = events[0].timestamp; 
+    const float TIME_SCALE = 0.0003f; 
 
-    sf::Clock globalClock;  // Global clock to track time for events
-    size_t current = 0;  // Index to track current event being processed
+    sf::Clock globalClock;
+    size_t current = 0;  
 
-    view = window.getDefaultView();        // default view for the window
+    view = window.getDefaultView();     
 
-    // Main loop: runs as long as the window is open
+    // This loop will run as long as window is open
     while (window.isOpen()) {
         sf::Event event;
         while (window.pollEvent(event)) {
             if (event.type == sf::Event::Closed)
-                window.close();     // Closing the window if the close event is triggered
+                window.close();     
             else if (event.type == sf::Event::MouseWheelScrolled)
-                view.move(0, -event.mouseWheelScroll.delta * 30);        // For scrolling
+                view.move(0, -event.mouseWheelScroll.delta * 30);      
         }
 
-        // Clear the window with a dark background color
         window.clear(sf::Color(30, 30, 30));
         window.setView(view);
 
-        // Drawing nodes
-        float x = 50, y = 100;  // Starting position for nodes
-        const float max_x = 1000;      // Max x position to prevent nodes from going out of the window
+        float x = 50, y = 100; 
+        const float max_x = 1000;    
 
         for (size_t i = 0; i < nodes.size(); ++i) {
             auto& [circle, text] = nodes[i];
             if (x > max_x) {
-                x = 50;     // If x goes out of window size then we reset it
+                x = 50;   
             }
             circle.setPosition(x, y);
             text.setPosition(x + 5, y + 5);
-            x += NODE_RADIUS * 2 + NODE_SPACING;    // shifting x for next node
+            x += NODE_RADIUS * 2 + NODE_SPACING;   
         }
 
-        // Drawing lines connecting nodes
         for (size_t i = 1; i < nodes.size(); ++i) {
             sf::Vertex line[] = {
                 sf::Vertex(nodes[i - 1].first.getPosition() + sf::Vector2f(NODE_RADIUS, NODE_RADIUS), sf::Color::White),
@@ -334,11 +293,9 @@ void run() {
             window.draw(line, 2, sf::Lines);
         }
 
-        // Animating events based on actual timestamp (scaled)
         float currentTime = globalClock.getElapsedTime().asSeconds();
         while (current < events.size() && (events[current].timestamp - startTime) * TIME_SCALE <= currentTime) {
             auto& e = events[current];
-            // If event type is "Producer", create a new node (producer)
             if (e.type == "Producer") {
                 sf::CircleShape node(NODE_RADIUS);
                 node.setFillColor(sf::Color::Blue);
@@ -353,17 +310,16 @@ void run() {
 
                 nodes.push_back({ node, txt });
             } 
-            // If event type is "Consumer", we mark a consumed node (change its color to red)
             else if (e.type == "Consumer") {
                 for (auto& [circle, text] : nodes) {
                     if (text.getString() == to_string(e.value)) {
                         circle.setFillColor(sf::Color::Red);
-                        text.setString(""); // fade consumed value
+                        text.setString("");
                         break;
                     }
                 }
             }
-            current++;    // Moving to the next event
+            current++;   
         }
 
         // FPS update
@@ -389,71 +345,65 @@ void run() {
 
 mutex LinkedListBuffer::log_mutex;
 
-// -------------------- Producer & Consumer Threads --------------------
+// Threads information by defualt
 const int NUM_PRODUCERS = 5;
 const int NUM_CONSUMERS = 3;
 const int ITEMS_PER_PRODUCER = 30;
 const int ITEMS_PER_CONSUMER = 50;
 
-LinkedListBuffer buffer;    // Shared buffer among all producers and consumers
+LinkedListBuffer buffer;   
 
 void producer(int id) {
     for (int i = 0; i < ITEMS_PER_PRODUCER; ++i) {
         int item = id * 1000 + i;   // Unique item based on producer ID
-        this_thread::sleep_for(chrono::milliseconds(10));   // Simulate work
-        buffer.produce(item, id);   // Add item to the buffer
+        this_thread::sleep_for(chrono::milliseconds(10));   // Simulating the work done by producer
+        buffer.produce(item, id);
     }
 }
 
 void consumer(int id) {
     for (int i = 0; i < ITEMS_PER_CONSUMER; ++i) {
-        buffer.consume(id);  // Remove item from the buffer
-        this_thread::sleep_for(chrono::milliseconds(18));  // Simulate processing time
+        buffer.consume(id);  
+        this_thread::sleep_for(chrono::milliseconds(18)); // Simulate the work done by consumer
     }
 }
 
 struct LogEntry {
     long long timestamp;
-    bool is_produce;  // true = produced, false = consumed
-    double wait_time_ms; // Time spent waiting (for lock or buffer)
+    bool is_produce;
+    double wait_time_ms;
 };
 
-// -------------------- Main --------------------
+// Driver code
 int main() {
 
-    ofstream("FiniteBufferLogger.txt") << ""; // Clear old logs
+    ofstream("FiniteBufferLogger.txt") << "";
 
     vector<thread> threads;
-    auto start_time = chrono::steady_clock::now(); // Tracks total runtime
+    auto start_time = chrono::steady_clock::now(); 
     
-    // Launch all producer threads
     for (int i = 0; i < NUM_PRODUCERS; ++i)
         threads.emplace_back(producer, i + 1);
 
-    // Launch all consumer threads
     for (int i = 0; i < NUM_CONSUMERS; ++i)
         threads.emplace_back(consumer, i + 1);
-
-    // Wait for all threads to complete
     for (auto& t : threads)
         t.join();
 
     auto end_time = chrono::steady_clock::now();
 
-    vector<double> stat = buffer.Stats();   // Getting produce/consume durations
+    vector<double> stat = buffer.Stats();  
 
     ifstream log("FiniteBufferLogger.txt");
     string line;
     vector<LogEntry> entries;
 
-    // Stats
-    // total_producer_wait: Total time producers spent waiting to acquire the lock (here only wait time will be to acquire lock(producer mutex) as infinte buffer is there)
-    // total_consumer_wait: Total time consumers spent waiting for an item to become available(non empty buffer) + acquire lock(consumer mutex)
+    // total_producer_wait: Total time producers spent waiting to acquire the lock 
+    // total_consumer_wait: Total time consumers spent waiting for an item to become available and acquire lock
     int total_produced = 0, total_consumed = 0;
     double total_producer_wait = 0.0, total_consumer_wait = 0.0;
     double max_producer_wait = 0.0, max_consumer_wait = 0.0;
 
-    // For producer fairness analysis
     unordered_map<int, double> producer_wait_sum;
     unordered_map<int, int> producer_wait_count;
     unordered_map<int, double> producer_wait_max;
@@ -475,13 +425,11 @@ int main() {
             ss >> wait_ms;
         }
 
-        // Aggregate for stats
         if (is_produce) {
             total_produced++;
             total_producer_wait += wait_ms;
             if (wait_ms > max_producer_wait) max_producer_wait = wait_ms;
             
-            // Track which producer produced
             size_t pid_pos = line.find("Producer ");
             if (pid_pos != string::npos) {
                 int pid = stoi(line.substr(pid_pos + 9));
@@ -504,29 +452,29 @@ int main() {
 
     // Displaying stats
     cout << fixed << setprecision(3);
-    cout << "\n===== LOG ANALYSIS REPORT =====\n";
+    cout << "\nLOG ANALYSIS REPORT\n";
     cout << "Total Items Produced       : " << total_produced << "\n";
     cout << "Total Items Consumed       : " << total_consumed << "\n";
     cout << "Final Buffer Size          : " << peak_buffer << "\n";
     cout << "Peak Buffer Size (Nodes)   : " << peak_buffer << "\n";
 
-    cout << "\n--- Runtime ---\n";
+    cout << "\nRuntime\n";
     cout << "Total Runtime              : " << total_runtime_sec << " seconds\n";
     cout << "Total Produce Time (just to produce in buffer including lock acquiring time and writing time)        : " << stat[0] << " seconds\n";
     cout << "Total Consume Time (just to consume from buffer including lock acquiring time and reading time)        : " << stat[1] << " seconds\n";
 
-    cout << "\n--- Producer Stats ---\n";
+    cout << "\nProducer Stats\n";
     cout << "Total Wait Time            : " << total_producer_wait << " ms\n";
     cout << "Average Wait Time          : " << (total_produced ? total_producer_wait / total_produced : 0) << " ms\n";
     cout << "Maximum Wait Time          : " << max_producer_wait << " ms\n";
 
-    cout << "\n--- Consumer Stats ---\n";
+    cout << "\nConsumer Stats\n";
     cout << "Total Wait Time            : " << total_consumer_wait << " ms\n";
     cout << "Average Wait Time          : " << (total_consumed ? total_consumer_wait / total_consumed : 0) << " ms\n";
     cout << "Maximum Wait Time          : " << max_consumer_wait << " ms\n";
     
     // Producer Fairness
-    cout << "\n--- Producer Fairness (by Avg Wait Time) ---\n";
+    cout << "\nProducer Fairness (by Avg Wait Time)\n";
     for (const auto& [pid, count] : producer_wait_count) {
         double avg_wait = producer_wait_sum[pid] / count;
         double max_wait = producer_wait_max[pid];
@@ -537,12 +485,9 @@ int main() {
              << " | Max Wait Time: " << max_wait << " ms"<<endl;
     }
     
-    cout << "\n=================================\n";
-
-    cout << "\nAll tasks done. Check FiniteBufferLogger.txt for logs.\n";
 
     Visualizer vis;
-    vis.run();  // Replaying activity using SFML graphics
+    vis.run();  // Running the visualizer.
 
     return 0;
 }
